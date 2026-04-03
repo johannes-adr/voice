@@ -1,0 +1,15 @@
+{
+  "name": "voice",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "voice_bg.wasm",
+    "voice.js",
+    "voice.d.ts"
+  ],
+  "main": "voice.js",
+  "types": "voice.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
