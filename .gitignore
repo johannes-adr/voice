@@ -1,0 +1,8 @@
+audio
+target
+.DS_Store
+**/*.png
+weights
+old
+mozillavoice
+.vscode
