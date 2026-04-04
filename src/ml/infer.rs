@@ -8,6 +8,8 @@ use super::dataset::{Label, MEL_BINS, Sample, TIME_FRAMES};
 use super::model::VoiceCNN;
 
 const ENERGY_THRESHOLD: f32 = 0.02;
+/// Must match the sample rate of the audio used during training (Mozilla Common Voice = 48000 Hz).
+const TRAINING_SAMPLE_RATE: u32 = 48000;
 
 pub struct Inferencer {
     model: VoiceCNN,
@@ -41,6 +43,16 @@ impl Inferencer {
         if rms < ENERGY_THRESHOLD {
             return None;
         }
+
+        // Resample to the training sample rate so the mel filterbank frequency
+        // mapping matches what the model was trained on.
+        let resampled;
+        let (samples, sample_rate) = if sample_rate != TRAINING_SAMPLE_RATE {
+            resampled = resample(samples, sample_rate, TRAINING_SAMPLE_RATE);
+            (resampled.as_slice(), TRAINING_SAMPLE_RATE)
+        } else {
+            (samples, sample_rate)
+        };
 
         let spec: Array2<f32> =
             compute_mel_spectrogram(samples, sample_rate, 1024, 512, 80).ok()?;
@@ -87,4 +99,22 @@ fn rms_energy(samples: &[f32]) -> f32 {
         return 0.0;
     }
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+/// Linear interpolation resampler. Good enough for voice classification.
+fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let ratio = from_rate as f64 / to_rate as f64;
+    let n_out = (samples.len() as f64 / ratio).ceil() as usize;
+    (0..n_out)
+        .map(|i| {
+            let pos = i as f64 * ratio;
+            let lo = pos.floor() as usize;
+            let hi = (lo + 1).min(samples.len() - 1);
+            let frac = (pos - pos.floor()) as f32;
+            samples[lo] * (1.0 - frac) + samples[hi] * frac
+        })
+        .collect()
 }
