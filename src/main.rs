@@ -3,7 +3,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use rayon::prelude::*;
-use voice::{evaluate_from_file, ml::Label, process_audio, read_audio, train_and_evaluate};
+use voice::{evaluate_from_file, ml::{Label, WINDOW_SECONDS}, process_audio, read_audio, train_and_evaluate};
 
 fn load_csv_samples(
     csv_path: &str,
@@ -40,7 +40,7 @@ fn load_csv_samples(
                     eprintln!("  skip {path}: {e}");
                     vec![]
                 }
-                Ok((samples, sample_rate)) => process_audio(&samples, sample_rate)
+                Ok((samples, sample_rate)) => process_audio(&samples, sample_rate, WINDOW_SECONDS)
                     .filter_map(|r| r.ok())
                     .map(|frame| (frame.spectrogram, *label))
                     .collect(),

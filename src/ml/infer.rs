@@ -4,12 +4,10 @@ use ndarray::Array2;
 
 use crate::mel::compute_mel_spectrogram;
 
-use super::dataset::{Label, MEL_BINS, Sample, TIME_FRAMES};
+use super::dataset::{Label, MEL_BINS, Sample, TIME_FRAMES, TRAINING_SAMPLE_RATE, FRAME_LEN, HOP_LEN};
 use super::model::VoiceCNN;
 
 const ENERGY_THRESHOLD: f32 = 0.02;
-/// Must match the sample rate of the audio used during training (Mozilla Common Voice = 48000 Hz).
-const TRAINING_SAMPLE_RATE: u32 = 48000;
 
 pub struct Inferencer {
     model: VoiceCNN,
@@ -55,7 +53,7 @@ impl Inferencer {
         };
 
         let spec: Array2<f32> =
-            compute_mel_spectrogram(samples, sample_rate, 1024, 512, 80).ok()?;
+            compute_mel_spectrogram(samples, sample_rate, FRAME_LEN, HOP_LEN, MEL_BINS).ok()?;
 
         if spec.ncols() == 0 {
             return None;

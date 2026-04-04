@@ -23,8 +23,9 @@ const ENERGY_THRESHOLD: f32 = 0.02;
 pub fn process_audio(
     samples: &[f32],
     sample_rate: u32,
+    window_seconds: f32,
 ) -> impl Iterator<Item = Result<MelFrame, Box<dyn Error>>> + '_ {
-    let window_size = (2.0 * sample_rate as f32).round() as usize;
+    let window_size = (window_seconds * sample_rate as f32).round() as usize;
 
     samples
         .chunks_exact(window_size.max(1))
