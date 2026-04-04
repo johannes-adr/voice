@@ -2,7 +2,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::ml::infer::Inferencer;
 
-static WEIGHTS: &[u8] = include_bytes!("../weights/2026-04-03-notested.safetensors");
+static WEIGHTS: &[u8] = include_bytes!("../weights/2026-04-04-81.4.safetensors");
 
 #[wasm_bindgen]
 pub struct VoiceClassifier {
