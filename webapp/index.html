@@ -233,18 +233,35 @@
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // Request audio with echo/noise cancellation disabled for cleaner signal
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl:  false,
+        },
+        video: false,
+      });
+
       audioCtx = new AudioContext();
+      // iOS Safari starts AudioContext in 'suspended' state even inside a
+      // user-gesture handler — resume() is required or onaudioprocess fires silence.
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
 
       const source    = audioCtx.createMediaStreamSource(stream);
-      const processor = audioCtx.createScriptProcessor(2048, 1, 1);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
       processor.onaudioprocess = e => {
         const chunk = e.inputBuffer.getChannelData(0);
-        pcmBuffer.push(...chunk);
+        // Float32Array spread can silently drop samples on some engines; concat instead
+        const arr = new Float32Array(chunk.length);
+        arr.set(chunk);
+        for (let i = 0; i < arr.length; i++) pcmBuffer.push(arr[i]);
         // Keep last 6 s
         const cap = Math.ceil(audioCtx.sampleRate * 6);
-        if (pcmBuffer.length > cap) pcmBuffer = pcmBuffer.slice(pcmBuffer.length - cap);
+        if (pcmBuffer.length > cap) pcmBuffer = pcmBuffer.splice(0, pcmBuffer.length - cap);
       };
 
       source.connect(processor);
