@@ -48,4 +48,12 @@ impl VoiceCNN {
         let x = self.drop.forward(&self.fc1.forward(&x)?.relu()?, train)?;
         self.fc2.forward(&x)
     }
+
+    /// Returns intermediate activation maps after each conv+relu+pool stage.
+    pub fn forward_with_activations(&self, x: &Tensor) -> Result<[Tensor; 3]> {
+        let act1 = self.conv1.forward(x)?.relu()?.max_pool2d(2)?;
+        let act2 = self.conv2.forward(&act1)?.relu()?.max_pool2d(2)?;
+        let act3 = self.conv3.forward(&act2)?.relu()?.max_pool2d(2)?;
+        Ok([act1, act2, act3])
+    }
 }

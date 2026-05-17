@@ -1,347 +1,443 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Voice ID</title>
-  <style>
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-
-    :root {
-      --color: #ffffff20;
-      --glow: transparent;
-    }
-
-    body {
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: #07070f;
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
-      overflow: hidden;
-      user-select: none;
-    }
-
-    /* Ambient radial background bloom */
-    #bloom {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      transition: background 1s ease;
-      background: transparent;
-    }
-
-    .scene {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 56px;
-      position: relative;
-      z-index: 1;
-    }
-
-    /* ── Microphone ── */
-    .mic-area {
-      position: relative;
-      width: 180px;
-      height: 180px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    /* Pulse rings */
-    .ring {
-      position: absolute;
-      inset: -20px;
-      border-radius: 50%;
-      border: 1px solid var(--color);
-      opacity: 0;
-      pointer-events: none;
-    }
-
-    @keyframes ring-out {
-      0%   { transform: scale(0.85); opacity: 0.55; }
-      100% { transform: scale(1.5);  opacity: 0; }
-    }
-
-    .speaking .ring:nth-child(1) { animation: ring-out 1.6s ease-out infinite; }
-    .speaking .ring:nth-child(2) { animation: ring-out 1.6s ease-out 0.53s infinite; }
-    .speaking .ring:nth-child(3) { animation: ring-out 1.6s ease-out 1.06s infinite; }
-
-    /* Mic button */
-    .mic-btn {
-      width: 160px;
-      height: 160px;
-      border-radius: 50%;
-      border: 1.5px solid #ffffff14;
-      background: #ffffff06;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      position: relative;
-      z-index: 1;
-      transition:
-        border-color 0.7s ease,
-        background   0.7s ease,
-        box-shadow   0.7s ease;
-    }
-
-    .mic-btn:hover {
-      background: #ffffff0f;
-      border-color: #ffffff22;
-    }
-
-    .mic-btn svg {
-      width: 60px;
-      height: 60px;
-      color: #ffffff40;
-      transition: color 0.6s ease;
-    }
-
-    @keyframes breathe {
-      0%, 100% { transform: scale(1); }
-      50%       { transform: scale(1.04); }
-    }
-
-    .speaking .mic-btn {
-      animation: breathe 1.8s ease-in-out infinite;
-      border-color: var(--color);
-      background: color-mix(in srgb, var(--color) 8%, transparent);
-      box-shadow: 0 0 48px 12px color-mix(in srgb, var(--color) 18%, transparent);
-    }
-
-    .speaking .mic-btn svg {
-      color: var(--color);
-    }
-
-    /* ── Speaker info ── */
-    .info {
-      text-align: center;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 16px;
-      min-height: 96px;
-    }
-
-    .name {
-      font-size: 52px;
-      font-weight: 200;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #ffffff18;
-      transition: color 0.55s ease;
-    }
-
-    .name.lit {
-      color: var(--color);
-    }
-
-    /* Confidence bar */
-    .bar-track {
-      width: 180px;
-      height: 2px;
-      background: #ffffff0c;
-      border-radius: 1px;
-      overflow: hidden;
-      opacity: 0;
-      transition: opacity 0.4s ease;
-    }
-
-    .bar-track.show { opacity: 1; }
-
-    .bar-fill {
-      height: 100%;
-      width: 0%;
-      border-radius: 1px;
-      background: var(--color);
-      transition: width 0.45s ease, background 0.55s ease;
-    }
-
-    .status {
-      font-size: 11px;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: #ffffff28;
-    }
-  </style>
-</head>
-<body>
-
-<div id="bloom"></div>
-
-<div class="scene">
-
-  <div class="mic-area" id="micArea">
-    <div class="ring"></div>
-    <div class="ring"></div>
-    <div class="ring"></div>
-    <div class="mic-btn" id="micBtn" onclick="start()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="2" width="6" height="11" rx="3"/>
-        <path d="M5 10a7 7 0 0 0 14 0"/>
-        <line x1="12" y1="17" x2="12" y2="22"/>
-        <line x1="8"  y1="22" x2="16" y2="22"/>
-      </svg>
-    </div>
-  </div>
-
-  <div class="info">
-    <div class="name" id="name">—</div>
-    <div class="bar-track" id="barTrack">
-      <div class="bar-fill" id="barFill"></div>
-    </div>
-    <div class="status" id="status">tap to start</div>
-  </div>
-
-</div>
-
-<script type="module">
-  import init, { VoiceClassifier } from './pkg/voice.js';
-
-  // Gender colours
-  const PALETTE = {
-    Male:   '#4d8fff',
-    Female: '#ff6eb4',
-  };
-
-  // ── State ──────────────────────────────────────────────────────────────────
-  let classifier  = null;
-  let audioCtx    = null;
-  let pcmBuffer   = [];
-  let running     = false;
-  let lastLabel   = null;
-
-  // ── Boot ───────────────────────────────────────────────────────────────────
-  async function start() {
-    if (running) return;
-
-    setStatus('loading model…');
-
-    try {
-      await init();
-      classifier = new VoiceClassifier();
-    } catch (e) {
-      setStatus('model error');
-      console.error(e);
-      return;
-    }
-
-    try {
-      // Request audio with echo/noise cancellation disabled for cleaner signal
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl:  false,
-        },
-        video: false,
-      });
-
-      audioCtx = new AudioContext();
-      // iOS Safari starts AudioContext in 'suspended' state even inside a
-      // user-gesture handler — resume() is required or onaudioprocess fires silence.
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice ID</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
       }
 
-      const source    = audioCtx.createMediaStreamSource(stream);
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      :root {
+        --color: #ffffff20;
+        --glow: transparent;
+      }
 
-      processor.onaudioprocess = e => {
-        const chunk = e.inputBuffer.getChannelData(0);
-        // Float32Array spread can silently drop samples on some engines; concat instead
-        const arr = new Float32Array(chunk.length);
-        arr.set(chunk);
-        for (let i = 0; i < arr.length; i++) pcmBuffer.push(arr[i]);
-        // Keep last 6 s
-        const cap = Math.ceil(audioCtx.sampleRate * 6);
-        if (pcmBuffer.length > cap) pcmBuffer = pcmBuffer.splice(0, pcmBuffer.length - cap);
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #07070f;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
+          sans-serif;
+        overflow: hidden;
+        user-select: none;
+      }
+
+      /* Ambient radial background bloom */
+      #bloom {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        transition: background 1s ease;
+        background: transparent;
+      }
+
+      .scene {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 56px;
+        position: relative;
+        z-index: 1;
+      }
+
+      /* ── Microphone ── */
+      .mic-area {
+        position: relative;
+        width: 180px;
+        height: 180px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      /* Pulse rings — promoted to GPU layer for smooth animation on mobile */
+      .ring {
+        position: absolute;
+        inset: -20px;
+        border-radius: 50%;
+        border: 1px solid var(--color);
+        opacity: 0;
+        pointer-events: none;
+        will-change: transform, opacity;
+      }
+
+      @keyframes ring-out {
+        0% {
+          transform: scale(0.85);
+          opacity: 0.55;
+        }
+        100% {
+          transform: scale(1.5);
+          opacity: 0;
+        }
+      }
+
+      .speaking .ring:nth-child(1) {
+        animation: ring-out 1.6s ease-out infinite;
+      }
+      .speaking .ring:nth-child(2) {
+        animation: ring-out 1.6s ease-out 0.53s infinite;
+      }
+      .speaking .ring:nth-child(3) {
+        animation: ring-out 1.6s ease-out 1.06s infinite;
+      }
+
+      /* Mic button */
+      .mic-btn {
+        width: 160px;
+        height: 160px;
+        border-radius: 50%;
+        border: 1.5px solid #ffffff14;
+        background: #ffffff06;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        position: relative;
+        z-index: 1;
+        transition:
+          border-color 0.7s ease,
+          background 0.7s ease,
+          box-shadow 0.7s ease;
+      }
+
+      .mic-btn:hover {
+        background: #ffffff0f;
+        border-color: #ffffff22;
+      }
+
+      .mic-btn svg {
+        width: 60px;
+        height: 60px;
+        color: #ffffff40;
+        transition: color 0.6s ease;
+      }
+
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.04);
+        }
+      }
+
+      .speaking .mic-btn {
+        animation: breathe 1.8s ease-in-out infinite;
+        border-color: var(--color);
+        background: color-mix(in srgb, var(--color) 8%, transparent);
+        box-shadow: 0 0 48px 12px
+          color-mix(in srgb, var(--color) 18%, transparent);
+        will-change: transform;
+      }
+
+      .speaking .mic-btn svg {
+        color: var(--color);
+      }
+
+      /* ── Speaker info ── */
+      .info {
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        min-height: 96px;
+      }
+
+      .name {
+        font-size: 52px;
+        font-weight: 200;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #ffffff18;
+        transition: color 0.55s ease;
+      }
+
+      .name.lit {
+        color: var(--color);
+      }
+
+      /* Confidence bar */
+      .bar-track {
+        width: 180px;
+        height: 2px;
+        background: #ffffff0c;
+        border-radius: 1px;
+        overflow: hidden;
+        opacity: 0;
+        transition: opacity 0.4s ease;
+      }
+
+      .bar-track.show {
+        opacity: 1;
+      }
+
+      .bar-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 1px;
+        background: var(--color);
+        transition:
+          width 0.45s ease,
+          background 0.55s ease;
+      }
+
+      .status {
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #ffffff28;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bloom"></div>
+
+    <div class="scene">
+      <div class="mic-area" id="micArea">
+        <div class="ring"></div>
+        <div class="ring"></div>
+        <div class="ring"></div>
+        <div class="mic-btn" id="micBtn" onclick="start()">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="9" y="2" width="6" height="11" rx="3" />
+            <path d="M5 10a7 7 0 0 0 14 0" />
+            <line x1="12" y1="17" x2="12" y2="22" />
+            <line x1="8" y1="22" x2="16" y2="22" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="info">
+        <div class="name" id="name">—</div>
+        <div class="bar-track" id="barTrack">
+          <div class="bar-fill" id="barFill"></div>
+        </div>
+        <div class="status" id="status">tap to start</div>
+      </div>
+    </div>
+
+    <script type="module">
+      import init, { VoiceClassifier } from "./pkg/voice.js";
+
+      // Gender colours
+      const PALETTE = {
+        Male: "#4d8fff",
+        Female: "#ff6eb4",
       };
 
-      source.connect(processor);
-      processor.connect(audioCtx.destination);
+      // ── Cached DOM refs ────────────────────────────────────────────────────────
+      const $micArea = document.getElementById("micArea");
+      const $name = document.getElementById("name");
+      const $barTrack = document.getElementById("barTrack");
+      const $barFill = document.getElementById("barFill");
+      const $bloom = document.getElementById("bloom");
+      const $status = document.getElementById("status");
 
-      running = true;
-      setStatus('listening…');
-      setInterval(infer, 450);
+      // ── State ──────────────────────────────────────────────────────────────────
+      let classifier = null;
+      let audioCtx = null;
+      let running = false;
+      let lastLabel = null;
+      let inferBusy = false;
 
-    } catch (e) {
-      setStatus('mic denied');
-      console.error(e);
-    }
-  }
+      // ── Pre-allocated ring buffer (Float32Array) ──────────────────────────────
+      const BUFFER_SECONDS = 6;
+      let ringBuf = null; // Float32Array, allocated once after AudioContext init
+      let ringWrite = 0; // next write position
+      let ringLen = 0; // valid samples stored (≤ ringBuf.length)
 
-  // ── Inference loop ─────────────────────────────────────────────────────────
-  function infer() {
-    if (!classifier || !audioCtx) return;
-    const need = Math.ceil(audioCtx.sampleRate * 2.0);
-    if (pcmBuffer.length < need) return;
+      /** Append a Float32Array chunk into the ring buffer (zero-alloc hot path). */
+      function pushSamples(chunk) {
+        const cap = ringBuf.length;
+        const n = chunk.length;
 
-    const windowSamples = Math.ceil(audioCtx.sampleRate * 2.0);
-    const samples = new Float32Array(pcmBuffer.slice(-windowSamples));
-    const result  = JSON.parse(classifier.predict(samples, audioCtx.sampleRate));
-    render(result);
-  }
+        if (n >= cap) {
+          // Chunk bigger than buffer — keep the tail
+          ringBuf.set(chunk.subarray(n - cap));
+          ringWrite = 0;
+          ringLen = cap;
+          return;
+        }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-  function render({ label, confidence }) {
-    const micArea  = document.getElementById('micArea');
-    const micBtn   = document.getElementById('micBtn');
-    const nameEl   = document.getElementById('name');
-    const barTrack = document.getElementById('barTrack');
-    const barFill  = document.getElementById('barFill');
-    const bloom    = document.getElementById('bloom');
+        const spaceAtEnd = cap - ringWrite;
+        if (n <= spaceAtEnd) {
+          ringBuf.set(chunk, ringWrite);
+        } else {
+          // Wrap around
+          ringBuf.set(chunk.subarray(0, spaceAtEnd), ringWrite);
+          ringBuf.set(chunk.subarray(spaceAtEnd), 0);
+        }
+        ringWrite = (ringWrite + n) % cap;
+        ringLen = Math.min(ringLen + n, cap);
+      }
 
-    const THRESHOLD = 0.6;
-    const speaking  = label && confidence >= THRESHOLD;
+      /** Read the last `n` samples as a contiguous Float32Array. */
+      function getLastSamples(n) {
+        n = Math.min(n, ringLen);
+        const cap = ringBuf.length;
+        const start = (ringWrite - n + cap) % cap;
+        const out = new Float32Array(n);
 
-    if (!speaking) {
-      // Silence
-      micArea.classList.remove('speaking');
-      nameEl.classList.remove('lit');
-      nameEl.textContent = '—';
-      barTrack.classList.remove('show');
-      setVar('--color', '#ffffff20');
-      bloom.style.background = 'transparent';
-      if (lastLabel) setStatus('listening…');
-      lastLabel = null;
-      return;
-    }
+        if (start + n <= cap) {
+          out.set(ringBuf.subarray(start, start + n));
+        } else {
+          const head = cap - start;
+          out.set(ringBuf.subarray(start, cap));
+          out.set(ringBuf.subarray(0, n - head), head);
+        }
+        return out;
+      }
 
-    const color = PALETTE[label] ?? '#ffffff';
+      // ── Boot ───────────────────────────────────────────────────────────────────
+      async function start() {
+        if (running) return;
 
-    setVar('--color', color);
-    micArea.classList.add('speaking');
+        setStatus("loading model…");
 
-    nameEl.textContent = label;
-    nameEl.classList.add('lit');
+        try {
+          await init();
+          classifier = new VoiceClassifier();
+        } catch (e) {
+          setStatus("model error");
+          console.error(e);
+          return;
+        }
 
-    barTrack.classList.add('show');
-    barFill.style.width = (confidence * 100).toFixed(1) + '%';
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
 
-    bloom.style.background =
-      `radial-gradient(ellipse 70% 55% at 50% 50%, ${color}10 0%, transparent 65%)`;
+          // Force 48 kHz so the WASM side skips its resampling path.
+          audioCtx = new AudioContext({ sampleRate: 48000 });
+          await audioCtx.resume(); // Required on iOS Safari
 
-    if (label !== lastLabel) setStatus('');
-    lastLabel = label;
-  }
+          // Allocate ring buffer once
+          ringBuf = new Float32Array(
+            Math.ceil(audioCtx.sampleRate * BUFFER_SECONDS),
+          );
+          ringWrite = 0;
+          ringLen = 0;
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  function setVar(name, value) {
-    document.documentElement.style.setProperty(name, value);
-  }
+          const source = audioCtx.createMediaStreamSource(stream);
 
-  function setStatus(msg) {
-    document.getElementById('status').textContent = msg;
-  }
+          // Prefer AudioWorklet (off-main-thread); fall back to ScriptProcessor.
+          try {
+            await audioCtx.audioWorklet.addModule("./pcm-worklet.js");
+            const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
+            worklet.port.onmessage = (e) => pushSamples(e.data);
+            source.connect(worklet);
+            worklet.connect(audioCtx.destination);
+          } catch (_) {
+            // Fallback: ScriptProcessor (still used by older WebKit builds)
+            const proc = audioCtx.createScriptProcessor(2048, 1, 1);
+            proc.onaudioprocess = (e) =>
+              pushSamples(e.inputBuffer.getChannelData(0));
+            source.connect(proc);
+            proc.connect(audioCtx.destination);
+          }
 
-  window.start = start;
-</script>
-</body>
+          running = true;
+          setStatus("listening…");
+          scheduleInfer();
+        } catch (e) {
+          setStatus("mic denied");
+          console.error(e);
+        }
+      }
+
+      // ── Inference loop (non-overlapping) ───────────────────────────────────────
+      function scheduleInfer() {
+        if (!running) return;
+        setTimeout(() => {
+          infer();
+          scheduleInfer();
+        }, 450);
+      }
+
+      function infer() {
+        if (!classifier || !audioCtx || inferBusy) return;
+        const need = Math.ceil(audioCtx.sampleRate * 2.0);
+        if (ringLen < need) return;
+
+        inferBusy = true;
+        try {
+          const samples = getLastSamples(need);
+          const result = JSON.parse(
+            classifier.predict(samples, audioCtx.sampleRate),
+          );
+          render(result);
+        } finally {
+          inferBusy = false;
+        }
+      }
+
+      // ── Render ─────────────────────────────────────────────────────────────────
+      const THRESHOLD = 0.6;
+
+      function render({ label, confidence }) {
+        const speaking = label && confidence >= THRESHOLD;
+
+        if (!speaking) {
+          $micArea.classList.remove("speaking");
+          $name.classList.remove("lit");
+          $name.textContent = "—";
+          $barTrack.classList.remove("show");
+          setVar("--color", "#ffffff20");
+          $bloom.style.background = "transparent";
+          if (lastLabel) setStatus("listening…");
+          lastLabel = null;
+          return;
+        }
+
+        const color = PALETTE[label] ?? "#ffffff";
+
+        setVar("--color", color);
+        $micArea.classList.add("speaking");
+
+        $name.textContent = label;
+        $name.classList.add("lit");
+
+        $barTrack.classList.add("show");
+        $barFill.style.width = (confidence * 100).toFixed(1) + "%";
+
+        $bloom.style.background = `radial-gradient(ellipse 70% 55% at 50% 50%, ${color}10 0%, transparent 65%)`;
+
+        if (label !== lastLabel) setStatus("");
+        lastLabel = label;
+      }
+
+      // ── Helpers ────────────────────────────────────────────────────────────────
+      function setVar(name, value) {
+        document.documentElement.style.setProperty(name, value);
+      }
+
+      function setStatus(msg) {
+        $status.textContent = msg;
+      }
+
+      window.start = start;
+    </script>
+  </body>
 </html>

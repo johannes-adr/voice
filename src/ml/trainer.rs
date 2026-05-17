@@ -1,5 +1,5 @@
 use candle_core::{D, DType, Device, Result, Tensor, Var};
-use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap, loss};
+use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap, loss, ops};
 use chrono::Local;
 use ndarray::Array2;
 use rand::SeedableRng;
@@ -10,8 +10,8 @@ use super::dataset::{Label, MEL_BINS, Sample, SplitDataset, TIME_FRAMES};
 use super::model::VoiceCNN;
 
 const BATCH_SIZE: usize = 256;
-const EPOCHS: usize = 60;
-const PATIENCE: usize = 80;
+const EPOCHS: usize = 120;
+const PATIENCE: usize = 120;
 const LEARNING_RATE: f64 = 1e-4;
 const SHUFFLE_SEED: u64 = 42;
 
@@ -129,6 +129,9 @@ pub fn train_and_evaluate(
     let mut patience_count = 0usize;
     let mut indices: Vec<usize> = (0..n_train).collect();
 
+    // (epoch, train_loss, val_loss, train_acc, val_acc) — NAN when not computed
+    let mut epoch_records: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
+
     'train: for epoch in 1..=EPOCHS {
         indices.shuffle(&mut epoch_rng);
 
@@ -169,10 +172,12 @@ pub fn train_and_evaluate(
                     train_acc * 100.0,
                     val_acc * 100.0
                 );
+                epoch_records.push((epoch, train_loss, val_loss, train_acc, val_acc));
             } else {
                 println!(
                     "Epoch {epoch:>2}/{EPOCHS}  train_loss: {train_loss:.4}  val_loss: {val_loss:.4}"
                 );
+                epoch_records.push((epoch, train_loss, val_loss, f32::NAN, f32::NAN));
             }
 
             if val_loss < best_val_loss - 1e-4 {
@@ -194,8 +199,10 @@ pub fn train_and_evaluate(
                     "Epoch {epoch:>2}/{EPOCHS}  train_loss: {train_loss:.4}  train_worst: {:.1}%",
                     train_acc * 100.0
                 );
+                epoch_records.push((epoch, train_loss, f32::NAN, train_acc, f32::NAN));
             } else {
                 println!("Epoch {epoch:>2}/{EPOCHS}  train_loss: {train_loss:.4}");
+                epoch_records.push((epoch, train_loss, f32::NAN, f32::NAN, f32::NAN));
             }
         }
     }
@@ -212,10 +219,10 @@ pub fn train_and_evaluate(
     }
 
     // ── Evaluation & save ─────────────────────────────────────────────────────
-    if !test_samples.is_empty() {
+    let weights_path = if !test_samples.is_empty() {
         let dataset = SplitDataset {
             train: vec![],
-            test: test_samples,
+            test: test_samples.clone(),
         };
         let test_acc = worst_class_accuracy(&model, &dataset.test, &device)?;
         per_class_accuracy(&model, &dataset.test, &device)?;
@@ -227,6 +234,7 @@ pub fn train_and_evaluate(
         let path = format!("weights/{date}-{acc_pct:.1}.safetensors");
         varmap.save(&path).map_err(candle_core::Error::wrap)?;
         println!("Weights saved to {path}");
+        path
     } else {
         println!("\n(no test set — skipping evaluation)");
         fs::create_dir_all("weights").map_err(candle_core::Error::wrap)?;
@@ -234,8 +242,52 @@ pub fn train_and_evaluate(
         let path = format!("weights/{date}-notested.safetensors");
         varmap.save(&path).map_err(candle_core::Error::wrap)?;
         println!("Weights saved to {path}");
+        path
+    };
+
+    // ── Export CSVs for Python plotting ──────────────────────────────────────
+    let plots_dir = {
+        let p = std::path::Path::new(&weights_path);
+        let parent = p.parent().unwrap_or(std::path::Path::new("weights"));
+        parent.join("plots")
+    };
+    fs::create_dir_all(&plots_dir).map_err(candle_core::Error::wrap)?;
+
+    let log_path = plots_dir.join("training_log.csv");
+    if let Err(e) = crate::plots::write_training_log(
+        &epoch_records,
+        log_path
+            .to_str()
+            .unwrap_or("weights/plots/training_log.csv"),
+    ) {
+        eprintln!("Warning: failed to save training log: {e}");
+    } else {
+        println!("CSV saved: {}", log_path.display());
     }
 
+    if !test_samples.is_empty() {
+        let preds = collect_predictions(&model, &test_samples, &device)?;
+        let preds_str: Vec<(String, String, f32)> = preds
+            .iter()
+            .map(|(t, p, c)| (t.name().to_string(), p.name().to_string(), *c))
+            .collect();
+        let pred_path = plots_dir.join("predictions.csv");
+        if let Err(e) = crate::plots::write_predictions(
+            &preds_str,
+            pred_path
+                .to_str()
+                .unwrap_or("weights/plots/predictions.csv"),
+        ) {
+            eprintln!("Warning: failed to save predictions: {e}");
+        } else {
+            println!("CSV saved: {}", pred_path.display());
+        }
+    }
+
+    println!(
+        "Run `python3 plot.py {}` to generate plots.",
+        plots_dir.display()
+    );
     Ok(())
 }
 
@@ -275,10 +327,74 @@ pub fn evaluate_from_file(weights_path: &str, test_raw: Vec<(Array2<f32>, Label)
     let test_acc = worst_class_accuracy(&model, &test_samples, &device)?;
     println!("Worst-class test accuracy: {:.1}%", test_acc * 100.0);
 
+    // ── Export CSVs for Python plotting ──────────────────────────────────────
+    let plots_dir = {
+        let p = std::path::Path::new(weights_path);
+        let parent = p.parent().unwrap_or(std::path::Path::new("."));
+        parent.join("plots")
+    };
+    if let Err(e) = fs::create_dir_all(&plots_dir) {
+        eprintln!("Warning: could not create plots dir: {e}");
+    } else {
+        let preds = collect_predictions(&model, &test_samples, &device)?;
+        let preds_str: Vec<(String, String, f32)> = preds
+            .iter()
+            .map(|(t, p, c)| (t.name().to_string(), p.name().to_string(), *c))
+            .collect();
+        let pred_path = plots_dir.join("predictions.csv");
+        if let Err(e) = crate::plots::write_predictions(
+            &preds_str,
+            pred_path.to_str().unwrap_or("plots/predictions.csv"),
+        ) {
+            eprintln!("Warning: failed to save predictions: {e}");
+        } else {
+            println!("CSV saved: {}", pred_path.display());
+            println!(
+                "Run `python3 plot.py {}` to generate plots.",
+                plots_dir.display()
+            );
+        }
+    }
+
     Ok(())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Run inference on all samples and return (true_label, pred_label, confidence) for each.
+fn collect_predictions(
+    model: &VoiceCNN,
+    samples: &[Sample],
+    device: &Device,
+) -> Result<Vec<(Label, Label, f32)>> {
+    let label_from_idx = |idx: u32| -> Label {
+        match idx {
+            0 => Label::Male,
+            _ => Label::Female,
+        }
+    };
+
+    let mut results: Vec<(Label, Label, f32)> = Vec::with_capacity(samples.len());
+    for chunk in samples.chunks(BATCH_SIZE) {
+        let (x, _) = SplitDataset::batch_tensors(chunk, device)?;
+        let logits = model.forward(&x, false)?;
+        let probs = ops::softmax(&logits, D::Minus1)?;
+        let probs_vec: Vec<f32> = probs.flatten_all()?.to_vec1()?;
+        let n = chunk.len();
+        let n_classes = probs_vec.len() / n;
+        for (i, sample) in chunk.iter().enumerate() {
+            let start = i * n_classes;
+            let class_probs = &probs_vec[start..start + n_classes];
+            let (pred_idx, &conf) = class_probs
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .unwrap();
+            results.push((sample.label, label_from_idx(pred_idx as u32), conf));
+        }
+    }
+    Ok(results)
+}
 
 fn compute_loss(model: &VoiceCNN, samples: &[Sample], device: &Device) -> Result<f32> {
     let (mut total_loss, mut batches) = (0f32, 0usize);

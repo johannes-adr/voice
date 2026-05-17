@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Result as CandleResult, Tensor};
 use candle_nn::VarBuilder;
 use ndarray::Array2;
 
@@ -89,6 +89,24 @@ impl Inferencer {
         };
 
         Some((label, conf))
+    }
+
+    /// Returns the three activation maps (after each conv+relu+pool) for a spectrogram.
+    /// Intended for visualization only (non-WASM).
+    pub fn activations_for_spectrogram(
+        &self,
+        spec: &Array2<f32>,
+    ) -> CandleResult<[Tensor; 3]> {
+        let sample = Sample::from_spectrogram(spec, Label::Male);
+        let x_raw = Tensor::from_vec(
+            sample.data,
+            (1usize, 1usize, MEL_BINS, TIME_FRAMES),
+            &self.device,
+        )?;
+        let mean = self.norm_mean.reshape((1, 1, MEL_BINS, 1))?;
+        let std  = self.norm_std.reshape((1, 1, MEL_BINS, 1))?;
+        let x = x_raw.broadcast_sub(&mean)?.broadcast_div(&std)?;
+        self.model.forward_with_activations(&x)
     }
 }
 

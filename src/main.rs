@@ -3,7 +3,11 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use rayon::prelude::*;
-use voice::{evaluate_from_file, ml::{Label, WINDOW_SECONDS}, process_audio, read_audio, train_and_evaluate};
+use voice::{
+    evaluate_from_file,
+    ml::{Label, infer::Inferencer, WINDOW_SECONDS},
+    process_audio, read_audio, save_activation_grid, save_activation_comparison, train_and_evaluate,
+};
 
 fn load_csv_samples(
     csv_path: &str,
@@ -34,17 +38,15 @@ fn load_csv_samples(
 
     let all_samples: Vec<(ndarray::Array2<f32>, Label)> = entries
         .par_iter()
-        .flat_map(|(path, label)| {
-            match read_audio(path) {
-                Err(e) => {
-                    eprintln!("  skip {path}: {e}");
-                    vec![]
-                }
-                Ok((samples, sample_rate)) => process_audio(&samples, sample_rate, WINDOW_SECONDS)
-                    .filter_map(|r| r.ok())
-                    .map(|frame| (frame.spectrogram, *label))
-                    .collect(),
+        .flat_map(|(path, label)| match read_audio(path) {
+            Err(e) => {
+                eprintln!("  skip {path}: {e}");
+                vec![]
             }
+            Ok((samples, sample_rate)) => process_audio(&samples, sample_rate, WINDOW_SECONDS)
+                .filter_map(|r| r.ok())
+                .map(|frame| (frame.spectrogram, *label))
+                .collect(),
         })
         .collect();
 
@@ -64,7 +66,9 @@ fn load_or_compute(
     if Path::new(&cache).exists() {
         println!("  Loading cache: {cache}");
         let file = std::fs::File::open(&cache)?;
-        match bincode::deserialize_from::<_, Vec<(ndarray::Array2<f32>, Label)>>(BufReader::new(file)) {
+        match bincode::deserialize_from::<_, Vec<(ndarray::Array2<f32>, Label)>>(BufReader::new(
+            file,
+        )) {
             Ok(samples) => return Ok(samples),
             Err(e) => eprintln!("  Cache invalid ({e}), recomputing…"),
         }
@@ -90,6 +94,46 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|e| format!("candle error: {e}").into());
     }
 
+    // --visualize <weights_path>: save mel spectrograms + activation maps, then exit.
+    if args.len() == 3 && args[1] == "--visualize" {
+        let weights_path = &args[2];
+        println!("Loading training data from cv_valid_dev.csv …");
+        let train_samples = load_or_compute("./mozillavoice/cv_valid_dev.csv", "./mozillavoice")?;
+        println!("  → {} voiced frames (train)", train_samples.len());
+
+        std::fs::create_dir_all("mel_spectrograms")?;
+        for (i, (spec, label)) in train_samples.iter().take(10).enumerate() {
+            let filename = format!("mel_spectrograms/{:02}_{}.png", i, label.name());
+            voice::save_mel_spectrogram_image(spec, &filename)?;
+            println!("  Saved {filename}");
+        }
+
+        let weights = std::fs::read(weights_path)?;
+        let inferencer = Inferencer::from_weights_bytes(weights)
+            .map_err(|e| format!("inferencer error: {e}"))?;
+
+        // One example per class
+        let (male_spec, _) = train_samples.iter().find(|(_, l)| matches!(l, Label::Male))
+            .ok_or("no male sample found")?;
+        let (female_spec, _) = train_samples.iter().find(|(_, l)| matches!(l, Label::Female))
+            .ok_or("no female sample found")?;
+
+        let male_acts = inferencer.activations_for_spectrogram(male_spec)
+            .map_err(|e| format!("activation error: {e}"))?;
+        let female_acts = inferencer.activations_for_spectrogram(female_spec)
+            .map_err(|e| format!("activation error: {e}"))?;
+
+        let layer_names = ["conv1_act", "conv2_act", "conv3_act"];
+        for (name, (m, f)) in layer_names.iter().zip(male_acts.iter().zip(female_acts.iter())) {
+            save_activation_grid(m, &format!("mel_spectrograms/{}_Male.png", name))?;
+            save_activation_grid(f, &format!("mel_spectrograms/{}_Female.png", name))?;
+            let cmp = format!("mel_spectrograms/{}_compare.png", name);
+            save_activation_comparison(m, f, &cmp)?;
+            println!("  Saved {cmp}  (red=Male, blue=Female, magenta=both)");
+        }
+        return Ok(());
+    }
+
     println!("Loading training data from cv_valid_dev.csv …");
     let train_samples = load_or_compute("./mozillavoice/cv_valid_dev.csv", "./mozillavoice")?;
     println!("  → {} voiced frames (train)", train_samples.len());
@@ -104,6 +148,5 @@ fn main() -> Result<(), Box<dyn Error>> {
         test_samples.len()
     );
 
-    train_and_evaluate(train_samples, test_samples)
-        .map_err(|e| format!("candle error: {e}").into())
+    train_and_evaluate(train_samples, test_samples).map_err(|e| format!("candle error: {e}").into())
 }
